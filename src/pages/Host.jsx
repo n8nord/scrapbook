@@ -162,7 +162,7 @@ export default function Host(){
       code_challenge_method: 'S256',
       code_challenge: challenge,
       state: verifier,
-      scope: 'user-read-currently-playing user-read-playback-state'
+      scope: 'user-read-currently-playing user-read-playback-state user-modify-playback-state'
     })
     const popup = window.open(
       `https://accounts.spotify.com/authorize?${params.toString()}`,
@@ -184,6 +184,55 @@ export default function Host(){
     const s = crypto.randomUUID()
     localStorage.setItem('host_sid', s)
     setSid(s)
+  }
+
+  // ---------- Search & Add to queue (Host-only) ----------
+  const [q, setQ] = useState('')
+  const [searching, setSearching] = useState(false)
+  const [results, setResults] = useState([])
+
+  // Debounced search using the host's access token via our proxy API
+  useEffect(() => {
+    if (!q || !spotifyTokens?.access_token) { setResults([]); return }
+    const id = setTimeout(async () => {
+      try {
+        setSearching(true)
+        const r = await fetch(`/api/spotify/search?q=${encodeURIComponent(q)}`, {
+          headers: { Authorization: `Bearer ${spotifyTokens.access_token}` }
+        })
+        const json = await r.json()
+        setResults(json?.tracks?.items || [])
+      } catch (e) {
+        console.error(e)
+      } finally {
+        setSearching(false)
+      }
+    }, 300)
+    return () => clearTimeout(id)
+  }, [q, spotifyTokens?.access_token])
+
+  async function addToQueue(uri) {
+    if (!spotifyTokens?.access_token) return alert('Connect Spotify first')
+    try {
+      const r = await fetch('/api/spotify/queue', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${spotifyTokens.access_token}`
+        },
+        body: JSON.stringify({ uri })
+      })
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}))
+        console.error('Queue error:', j)
+        return alert('Could not queue track. Make sure a Spotify device is active.')
+      }
+      // optional: clear query
+      // setQ('')
+    } catch (e) {
+      console.error(e)
+      alert('Network error while queuing')
+    }
   }
 
   return (
@@ -210,9 +259,64 @@ export default function Host(){
           <button onClick={newSession} style={{background:'#1f1f1f', border:'1px solid #333', color:'#fff', borderRadius:8, padding:'8px 12px'}}>New Session</button>
         </div>
 
+        {/* === Search & Add to queue (Host) === */}
+        {spotifyTokens?.access_token && (
+          <div style={{marginTop:12, padding:12, background:'#0f0f0f', borderRadius:12}}>
+            <div style={{display:'flex', gap:8, alignItems:'center'}}>
+              <input
+                value={q}
+                onChange={e=>setQ(e.target.value)}
+                placeholder="Search songs to add…"
+                style={{flex:1, padding:'10px 12px', background:'#161616', color:'#fff',
+                        border:'1px solid #333', borderRadius:8}}
+              />
+              <button
+                onClick={()=>setQ(q.trim())}
+                style={{padding:'10px 12px', background:'#1f1f1f', border:'1px solid #333',
+                        color:'#fff', borderRadius:8}}
+              >
+                Search
+              </button>
+            </div>
+
+            {searching && <div style={{opacity:.7, marginTop:8}}>Searching…</div>}
+
+            {!!results.length && (
+              <ul style={{listStyle:'none', padding:0, marginTop:10, maxHeight:260, overflowY:'auto'}}>
+                {results.map(tr => {
+                  const img = tr.album?.images?.[2]?.url || tr.album?.images?.[1]?.url || tr.album?.images?.[0]?.url
+                  const artists = (tr.artists||[]).map(a=>a.name).join(', ')
+                  return (
+                    <li key={tr.id} style={{
+                      display:'flex', alignItems:'center', justifyContent:'space-between',
+                      gap:12, padding:'8px 10px', margin:'6px 0',
+                      background:'#111', borderRadius:10
+                    }}>
+                      <div style={{display:'flex', alignItems:'center', gap:10}}>
+                        {img && <img src={img} alt="" width="48" height="48" style={{borderRadius:8, objectFit:'cover'}} />}
+                        <div>
+                          <div style={{fontWeight:700}}>{tr.name}</div>
+                          <div style={{opacity:.8, fontSize:13}}>{artists}</div>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => addToQueue(tr.uri)}
+                        style={{background:'#2b2b2b', color:'#fff', border:'1px solid #333',
+                                borderRadius:8, padding:'6px 10px', cursor:'pointer'}}
+                      >
+                        Add to queue
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </div>
+        )}
+
         {/* Who liked (avatars) */}
         {!!likedUsers.length && (
-          <div style={{display:'flex',flexWrap:'wrap',justifyContent:'center',gap:14,marginBottom:12}}>
+          <div style={{display:'flex',flexWrap:'wrap',justifyContent:'center',gap:14,marginBottom:12, marginTop:12}}>
             {likedUsers.map(name => {
               const a = avatarFor(name)
               return (

@@ -1,5 +1,11 @@
 import { useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { createClient } from '@supabase/supabase-js'
+
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
+)
 
 export default function Join() {
   const [sp] = useSearchParams()
@@ -12,49 +18,54 @@ export default function Join() {
   const [currentUser, setCurrentUser] = useState(null)
   const [members, setMembers] = useState([])
 
-  // Load session roster + auto-login
+  // load roster + autologin
   useEffect(() => {
-    const me = JSON.parse(localStorage.getItem('currentUser') || 'null')
-    if (me && me.sid === sid) {
-      setCurrentUser(me)
-      setMode('joined')
-    }
-    refreshMembers()
+    (async () => {
+      const me = JSON.parse(localStorage.getItem('currentUser') || 'null')
+      if (me && me.sid === sid) { setCurrentUser(me); setMode('joined') }
+      const { data } = await supabase
+        .from('members')
+        .select('username,favorite')
+        .eq('sid', sid)
+        .order('joined_at', { ascending: true })
+      setMembers(data || [])
+    })()
   }, [sid])
 
-  function refreshMembers() {
-    const key = `session:${sid}:members`
-    const existing = JSON.parse(localStorage.getItem(key) || '[]')
-    setMembers(existing)
+  async function refreshMembers() {
+    const { data } = await supabase
+      .from('members')
+      .select('username,favorite')
+      .eq('sid', sid)
+      .order('joined_at', { ascending: true })
+    setMembers(data || [])
   }
 
-  function saveMember(user) {
-    const key = `session:${sid}:members`
-    const existing = JSON.parse(localStorage.getItem(key) || '[]')
-    const newList = [...existing.filter(m => m.username !== user.username), user]
-    localStorage.setItem(key, JSON.stringify(newList))
-    setMembers(newList)
+  async function addMember(user) {
+    await supabase.from('members').upsert({
+      sid,
+      username: user.username,
+      favorite: user.favorite || null
+    })
+    await refreshMembers()
   }
 
-  function removeMember(username) {
-    const key = `session:${sid}:members`
-    const existing = JSON.parse(localStorage.getItem(key) || '[]')
-    const newList = existing.filter(m => m.username !== username)
-    localStorage.setItem(key, JSON.stringify(newList))
-    setMembers(newList)
+  async function removeMember(name) {
+    await supabase.from('members').delete().eq('sid', sid).eq('username', name)
+    await refreshMembers()
   }
 
-  function signUp() {
+  async function signUp() {
     if (!username || !passcode) return alert('Need username + passcode')
     const user = { username, passcode, favorite, sid }
     localStorage.setItem(`user:${username}`, JSON.stringify(user))
     localStorage.setItem('currentUser', JSON.stringify(user))
     setCurrentUser(user)
-    saveMember(user)
+    await addMember(user)
     setMode('joined')
   }
 
-  function logIn() {
+  async function logIn() {
     const raw = localStorage.getItem(`user:${username}`)
     if (!raw) return alert('No such user')
     const user = JSON.parse(raw)
@@ -62,13 +73,13 @@ export default function Join() {
     user.sid = sid
     localStorage.setItem('currentUser', JSON.stringify(user))
     setCurrentUser(user)
-    saveMember(user)
+    await addMember(user)
     setMode('joined')
   }
 
-  function leave() {
+  async function leave() {
     if (!currentUser) return
-    removeMember(currentUser.username)
+    await removeMember(currentUser.username)
     localStorage.removeItem('currentUser')
     setCurrentUser(null)
     setMode('menu')
@@ -81,14 +92,11 @@ export default function Join() {
         <h1>Join Session</h1>
         <p>Session: {sid}</p>
         <button onClick={() => setMode('signup')}>Sign Up</button>
-        <button onClick={() => setMode('login')} style={{marginLeft:12}}>Log In</button>
+        <button onClick={() => setMode('login')} style={{ marginLeft:12 }}>Log In</button>
 
-        <h2 style={{marginTop:24}}>Currently logged in users:</h2>
+        <h2 style={{ marginTop:24 }}>Currently logged in users:</h2>
         <ul>
-          {members.map(m => (
-            <li key={m.username}>{m.username}</li>
-          ))}
-          {members.length === 0 && <li>None yet</li>}
+          {members.length ? members.map(m => <li key={m.username}>{m.username}</li>) : <li>None yet</li>}
         </ul>
       </main>
     )
@@ -102,7 +110,7 @@ export default function Join() {
         <input placeholder="4-digit passcode" value={passcode} onChange={e=>setPasscode(e.target.value)} /><br/>
         <input placeholder="Favorite song" value={favorite} onChange={e=>setFavorite(e.target.value)} /><br/>
         <button onClick={signUp}>Create Account</button>
-        <button onClick={() => setMode('menu')} style={{marginLeft:12}}>Cancel</button>
+        <button onClick={() => setMode('menu')} style={{ marginLeft:12 }}>Cancel</button>
       </main>
     )
   }
@@ -114,7 +122,7 @@ export default function Join() {
         <input placeholder="Username" value={username} onChange={e=>setUsername(e.target.value)} /><br/>
         <input placeholder="4-digit passcode" value={passcode} onChange={e=>setPasscode(e.target.value)} /><br/>
         <button onClick={logIn}>Log In</button>
-        <button onClick={() => setMode('menu')} style={{marginLeft:12}}>Cancel</button>
+        <button onClick={() => setMode('menu')} style={{ marginLeft:12 }}>Cancel</button>
       </main>
     )
   }
@@ -126,7 +134,7 @@ export default function Join() {
         <p>Favorite song: {currentUser.favorite || '(none)'} </p>
         <button onClick={leave}>Left Vehicle</button>
 
-        <h2 style={{marginTop:24}}>Currently logged in users:</h2>
+        <h2 style={{ marginTop:24 }}>Currently logged in users:</h2>
         <ul>
           {members.map(m => (
             <li key={m.username}>

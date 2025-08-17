@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { createClient } from '@supabase/supabase-js'
 
@@ -17,43 +17,42 @@ export default function Join() {
   const [favorite, setFavorite] = useState('')
   const [currentUser, setCurrentUser] = useState(null)
   const [members, setMembers] = useState([])
-  const [err, setErr] = useState('')
-
-  async function refreshMembers() {
-    const { data, error } = await supabase
-      .from('members')
-      .select('username,favorite')
-      .eq('sid', sid)
-      .order('joined_at', { ascending: true })
-    if (error) { console.error(error); setErr(error.message) }
-    setMembers(data || [])
-  }
+  const kickedOnce = useRef(false) // avoid duplicate alerts
 
   // load roster + autologin
   useEffect(() => {
     (async () => {
       const me = JSON.parse(localStorage.getItem('currentUser') || 'null')
       if (me && me.sid === sid) { setCurrentUser(me); setMode('joined') }
-      await refreshMembers()
+      const { data } = await supabase
+        .from('members')
+        .select('username,favorite')
+        .eq('sid', sid)
+        .order('joined_at', { ascending: true })
+      setMembers(data || [])
     })()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sid])
 
-  async function addMember(user) {
-    setErr('')
-    const { error } = await supabase.from('members').upsert({
+  async function refreshMembers() {
+    const { data } = await supabase
+      .from('members')
+      .select('username,favorite')
+      .eq('sid', sid)
+      .order('joined_at', { ascending: true })
+    setMembers(data || [])
+  }
+
+  async function upsertMember(user) {
+    await supabase.from('members').upsert({
       sid,
       username: user.username,
       favorite: user.favorite || null
     })
-    if (error) { console.error('upsert error:', error); setErr(error.message) }
     await refreshMembers()
   }
 
-  async function removeMember(name) {
-    setErr('')
-    const { error } = await supabase.from('members').delete().eq('sid', sid).eq('username', name)
-    if (error) { console.error('delete error:', error); setErr(error.message) }
+  async function deleteMember(name) {
+    await supabase.from('members').delete().eq('sid', sid).eq('username', name)
     await refreshMembers()
   }
 
@@ -63,7 +62,7 @@ export default function Join() {
     localStorage.setItem(`user:${username}`, JSON.stringify(user))
     localStorage.setItem('currentUser', JSON.stringify(user))
     setCurrentUser(user)
-    await addMember(user)
+    await upsertMember(user)
     setMode('joined')
   }
 
@@ -75,17 +74,47 @@ export default function Join() {
     user.sid = sid
     localStorage.setItem('currentUser', JSON.stringify(user))
     setCurrentUser(user)
-    await addMember(user)
+    await upsertMember(user)
     setMode('joined')
   }
 
-  async function leave() {
-    if (!currentUser) return
-    await removeMember(currentUser.username)
+  function localLogout() {
     localStorage.removeItem('currentUser')
     setCurrentUser(null)
     setMode('menu')
   }
+
+  async function leave() {
+    if (!currentUser) return
+    await deleteMember(currentUser.username)
+    localLogout()
+  }
+
+  // Realtime: if THIS user's row is deleted (kicked) -> auto-logout
+  useEffect(() => {
+    if (!currentUser?.username) return
+    const channel = supabase
+      .channel('members-realtime-join')
+      .on(
+        'postgres_changes',
+        {
+          event: 'delete',
+          schema: 'public',
+          table: 'members',
+          filter: `sid=eq.${sid}`
+        },
+        payload => {
+          const removed = payload.old
+          if (removed?.username === currentUser.username && !kickedOnce.current) {
+            kickedOnce.current = true
+            localLogout()
+            alert('You were removed from the session.')
+          }
+        }
+      )
+      .subscribe()
+    return () => supabase.removeChannel(channel)
+  }, [sid, currentUser])
 
   // UI
   if (mode === 'menu') {
@@ -94,10 +123,9 @@ export default function Join() {
         <h1>Join Session</h1>
         <p>Session: {sid}</p>
         <button onClick={() => setMode('signup')}>Sign Up</button>
-        <button onClick={() => setMode('login')} style={{ marginLeft:12 }}>Log In</button>
+        <button onClick={() => setMode('login')} style={{marginLeft:12}}>Log In</button>
 
-        <h2 style={{ marginTop:24 }}>Currently logged in users:</h2>
-        {err && <div style={{color:'#c00'}}>Error: {err}</div>}
+        <h2 style={{marginTop:24}}>Currently logged in users:</h2>
         <ul>
           {members.length ? members.map(m => <li key={m.username}>{m.username}</li>) : <li>None yet</li>}
         </ul>
@@ -113,8 +141,7 @@ export default function Join() {
         <input placeholder="4-digit passcode" value={passcode} onChange={e=>setPasscode(e.target.value)} /><br/>
         <input placeholder="Favorite song" value={favorite} onChange={e=>setFavorite(e.target.value)} /><br/>
         <button onClick={signUp}>Create Account</button>
-        <button onClick={() => setMode('menu')} style={{ marginLeft:12 }}>Cancel</button>
-        {err && <div style={{marginTop:12, color:'#c00'}}>Error: {err}</div>}
+        <button onClick={() => setMode('menu')} style={{marginLeft:12}}>Cancel</button>
       </main>
     )
   }
@@ -126,8 +153,7 @@ export default function Join() {
         <input placeholder="Username" value={username} onChange={e=>setUsername(e.target.value)} /><br/>
         <input placeholder="4-digit passcode" value={passcode} onChange={e=>setPasscode(e.target.value)} /><br/>
         <button onClick={logIn}>Log In</button>
-        <button onClick={() => setMode('menu')} style={{ marginLeft:12 }}>Cancel</button>
-        {err && <div style={{marginTop:12, color:'#c00'}}>Error: {err}</div>}
+        <button onClick={() => setMode('menu')} style={{marginLeft:12}}>Cancel</button>
       </main>
     )
   }
@@ -139,8 +165,7 @@ export default function Join() {
         <p>Favorite song: {currentUser.favorite || '(none)'} </p>
         <button onClick={leave}>Left Vehicle</button>
 
-        <h2 style={{ marginTop:24 }}>Currently logged in users:</h2>
-        {err && <div style={{color:'#c00'}}>Error: {err}</div>}
+        <h2 style={{marginTop:24}}>Currently logged in users:</h2>
         <ul>
           {members.map(m => (
             <li key={m.username}>

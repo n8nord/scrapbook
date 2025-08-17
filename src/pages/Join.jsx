@@ -17,46 +17,29 @@ export default function Join() {
   const [favorite, setFavorite] = useState('')
   const [currentUser, setCurrentUser] = useState(null)
 
-  // now playing + my likes
   const [now, setNow] = useState(null)
   const [myLikes, setMyLikes] = useState([])
   const [err, setErr] = useState('')
   const [members, setMembers] = useState([])
 
-  // roster
+  // ---------- helpers ----------
   async function refreshMembers() {
-    const { data } = await supabase.from('members').select('username').eq('sid', sid).order('joined_at', { ascending: true })
+    const { data } = await supabase.from('members').select('username').eq('sid', sid).order('joined_at', { ascending:true })
     setMembers(data || [])
   }
 
-  // autologin + load lists
-  useEffect(() => {
-    (async () => {
-      const me = JSON.parse(localStorage.getItem('currentUser') || 'null')
-      if (me && me.sid === sid) { setCurrentUser(me); setMode('joined') }
-      await refreshMembers()
-      await refreshNow(); await refreshLikes()
-    })()
-    // realtime now_playing subscription
-    const ch = supabase.channel('np-live')
-      .on('postgres_changes', { event:'*', schema:'public', table:'now_playing', filter:`sid=eq.${sid}` },
-        () => refreshNow())
-      .subscribe()
-    return () => { supabase.removeChannel(ch) }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sid])
-
-  async function refreshNow(){
+  async function refreshNow() {
     const { data } = await supabase.from('now_playing').select('*').eq('sid', sid).single()
     setNow(data || null)
   }
-  async function refreshLikes(){
+
+  async function refreshLikesAllTime() {
     if (!currentUser) return setMyLikes([])
     const { data } = await supabase
-      .from('liked_songs')
-      .select('uri,title,artist,artwork,liked_at')
-      .eq('sid', sid).eq('username', currentUser.username)
-      .order('liked_at', { ascending:false })
+      .from('liked_songs_all')
+      .select('uri,title,artist,artwork,first_liked_at')
+      .eq('username', currentUser.username)
+      .order('first_liked_at', { ascending:false })
     setMyLikes(data || [])
   }
 
@@ -69,12 +52,52 @@ export default function Join() {
     await refreshMembers()
   }
 
+  // ---------- auto-login & initial loads ----------
+  useEffect(() => {
+    (async () => {
+      const me = JSON.parse(localStorage.getItem('currentUser') || 'null')
+      if (me) { setCurrentUser(me); setMode('joined') }
+      await refreshMembers()
+      await refreshNow()
+      await refreshLikesAllTime()
+    })()
+
+    const ch = supabase.channel('np-live')
+      .on('postgres_changes', { event:'*', schema:'public', table:'now_playing', filter:`sid=eq.${sid}` }, () => refreshNow())
+      .subscribe()
+    return () => { supabase.removeChannel(ch) }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sid])
+
+  // ---------- heartbeat presence every 10s ----------
+  useEffect(() => {
+    let timer
+    async function beat(){
+      if (!currentUser) return
+      // if kicked, membership row is gone → log out gracefully
+      const { data: mem } = await supabase
+        .from('members').select('username').eq('sid', sid).eq('username', currentUser.username)
+      if (!mem || mem.length === 0) {
+        localStorage.removeItem('currentUser')
+        setCurrentUser(null); setMode('menu')
+        return
+      }
+      await supabase.from('presence').upsert({
+        sid, username: currentUser.username, last_seen: new Date().toISOString()
+      })
+    }
+    beat()
+    timer = setInterval(beat, 10_000)
+    return () => clearInterval(timer)
+  }, [sid, currentUser])
+
+  // ---------- auth flows ----------
   async function signUp() {
     if (!username || !passcode) return alert('Need username + passcode')
     const user = { username, passcode, favorite, sid }
     localStorage.setItem(`user:${username}`, JSON.stringify(user))
     localStorage.setItem('currentUser', JSON.stringify(user))
-    setCurrentUser(user); await addMember(user); setMode('joined'); await refreshLikes()
+    setCurrentUser(user); await addMember(user); setMode('joined'); await refreshLikesAllTime()
   }
   async function logIn() {
     const raw = localStorage.getItem(`user:${username}`)
@@ -83,7 +106,7 @@ export default function Join() {
     if (user.passcode !== passcode) return alert('Wrong passcode')
     user.sid = sid
     localStorage.setItem('currentUser', JSON.stringify(user))
-    setCurrentUser(user); await addMember(user); setMode('joined'); await refreshLikes()
+    setCurrentUser(user); await addMember(user); setMode('joined'); await refreshLikesAllTime()
   }
   async function leave() {
     if (!currentUser) return
@@ -92,20 +115,25 @@ export default function Join() {
     setCurrentUser(null); setMode('menu')
   }
 
+  // ---------- like current (writes session + all-time) ----------
   async function likeCurrent() {
     if (!currentUser) return alert('Log in first')
     if (!now) return alert('Nothing playing')
     setErr('')
-    const { error } = await supabase.from('liked_songs').upsert({
+    const row = {
       sid,
       username: currentUser.username,
       uri: now.uri,
       title: now.title,
       artist: now.artist,
       artwork: now.artwork
-    })
-    if (error) setErr(error.message)
-    await refreshLikes()
+    }
+    const { error: e1 } = await supabase.from('liked_songs').upsert(row) // session-scoped
+    const { error: e2 } = await supabase.from('liked_songs_all').upsert({
+      username: row.username, uri: row.uri, title: row.title, artist: row.artist, artwork: row.artwork
+    }) // durable across sessions
+    if (e1 || e2) setErr((e1?.message || '') + ' ' + (e2?.message || ''))
+    await refreshLikesAllTime()
   }
 
   // ---------- UI ----------
@@ -150,7 +178,7 @@ export default function Join() {
 
   if (mode === 'joined') {
     return (
-      <main style={{ padding:24, fontFamily:'system-ui' }}>
+      <main style={{ padding:24, fontFamily:'system-ui', maxWidth:680, margin:'0 auto' }}>
         <h1>Welcome, {currentUser.username} 🎉</h1>
 
         <section style={{marginTop:12, padding:12, border:'1px solid #ddd', borderRadius:10}}>
@@ -169,7 +197,7 @@ export default function Join() {
         </section>
 
         <section style={{marginTop:16}}>
-          <h2>My Liked Songs</h2>
+          <h2>My Liked Songs (all time)</h2>
           {myLikes.length ? (
             <ul style={{paddingLeft:16}}>
               {myLikes.map((t,i)=>(

@@ -8,7 +8,7 @@ export default function Host() {
 
   // Hard-coded deployed base URL
   const base = "https://scrapbook-ggi2.vercel.app"
-  const joinUrl = `${base}/join?sid=${sid}`
+  const joinUrl = `${base}/#/join?sid=${sid}`
 
   // Render QR code
   useEffect(() => {

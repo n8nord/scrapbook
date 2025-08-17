@@ -17,41 +17,43 @@ export default function Join() {
   const [favorite, setFavorite] = useState('')
   const [currentUser, setCurrentUser] = useState(null)
   const [members, setMembers] = useState([])
+  const [err, setErr] = useState('')
+
+  async function refreshMembers() {
+    const { data, error } = await supabase
+      .from('members')
+      .select('username,favorite')
+      .eq('sid', sid)
+      .order('joined_at', { ascending: true })
+    if (error) { console.error(error); setErr(error.message) }
+    setMembers(data || [])
+  }
 
   // load roster + autologin
   useEffect(() => {
     (async () => {
       const me = JSON.parse(localStorage.getItem('currentUser') || 'null')
       if (me && me.sid === sid) { setCurrentUser(me); setMode('joined') }
-      const { data } = await supabase
-        .from('members')
-        .select('username,favorite')
-        .eq('sid', sid)
-        .order('joined_at', { ascending: true })
-      setMembers(data || [])
+      await refreshMembers()
     })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sid])
 
-  async function refreshMembers() {
-    const { data } = await supabase
-      .from('members')
-      .select('username,favorite')
-      .eq('sid', sid)
-      .order('joined_at', { ascending: true })
-    setMembers(data || [])
-  }
-
   async function addMember(user) {
-    await supabase.from('members').upsert({
+    setErr('')
+    const { error } = await supabase.from('members').upsert({
       sid,
       username: user.username,
       favorite: user.favorite || null
     })
+    if (error) { console.error('upsert error:', error); setErr(error.message) }
     await refreshMembers()
   }
 
   async function removeMember(name) {
-    await supabase.from('members').delete().eq('sid', sid).eq('username', name)
+    setErr('')
+    const { error } = await supabase.from('members').delete().eq('sid', sid).eq('username', name)
+    if (error) { console.error('delete error:', error); setErr(error.message) }
     await refreshMembers()
   }
 
@@ -95,6 +97,7 @@ export default function Join() {
         <button onClick={() => setMode('login')} style={{ marginLeft:12 }}>Log In</button>
 
         <h2 style={{ marginTop:24 }}>Currently logged in users:</h2>
+        {err && <div style={{color:'#c00'}}>Error: {err}</div>}
         <ul>
           {members.length ? members.map(m => <li key={m.username}>{m.username}</li>) : <li>None yet</li>}
         </ul>
@@ -111,6 +114,7 @@ export default function Join() {
         <input placeholder="Favorite song" value={favorite} onChange={e=>setFavorite(e.target.value)} /><br/>
         <button onClick={signUp}>Create Account</button>
         <button onClick={() => setMode('menu')} style={{ marginLeft:12 }}>Cancel</button>
+        {err && <div style={{marginTop:12, color:'#c00'}}>Error: {err}</div>}
       </main>
     )
   }
@@ -123,6 +127,7 @@ export default function Join() {
         <input placeholder="4-digit passcode" value={passcode} onChange={e=>setPasscode(e.target.value)} /><br/>
         <button onClick={logIn}>Log In</button>
         <button onClick={() => setMode('menu')} style={{ marginLeft:12 }}>Cancel</button>
+        {err && <div style={{marginTop:12, color:'#c00'}}>Error: {err}</div>}
       </main>
     )
   }
@@ -135,6 +140,7 @@ export default function Join() {
         <button onClick={leave}>Left Vehicle</button>
 
         <h2 style={{ marginTop:24 }}>Currently logged in users:</h2>
+        {err && <div style={{color:'#c00'}}>Error: {err}</div>}
         <ul>
           {members.map(m => (
             <li key={m.username}>

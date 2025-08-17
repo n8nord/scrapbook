@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import QRCode from 'qrcode'
 import { createClient } from '@supabase/supabase-js'
 
@@ -11,54 +11,63 @@ export default function Host() {
   const canvasRef = useRef(null)
   const [sid] = useState(() => crypto.randomUUID())
   const [members, setMembers] = useState([])
-  const base = "https://scrapbook-ggi2.vercel.app" // your live domain
+  const [err, setErr] = useState('')
+  const base = "https://scrapbook-ggi2.vercel.app"
   const joinUrl = `${base}/#/join?sid=${sid}`
 
   // draw QR
   useEffect(() => {
-    const draw = () => QRCode.toCanvas(canvasRef.current, joinUrl, { errorCorrectionLevel: 'M' })
-    draw()
+    QRCode.toCanvas(canvasRef.current, joinUrl, { errorCorrectionLevel: 'M' })
   }, [joinUrl])
 
-  // initial load
-  useEffect(() => {
-    (async () => {
-      const { data } = await supabase
-        .from('members')
-        .select('username,favorite')
-        .eq('sid', sid)
-        .order('joined_at', { ascending: true })
-      setMembers(data || [])
-    })()
-  }, [sid])
+  async function fetchMembers() {
+    const { data, error } = await supabase
+      .from('members')
+      .select('username,favorite')
+      .eq('sid', sid)
+      .order('joined_at', { ascending: true })
+    if (error) {
+      console.error('Supabase select error:', error)
+      setErr(error.message)
+      return
+    }
+    setMembers(data || [])
+  }
 
-  // realtime subscribe
+  // initial load
+  useEffect(() => { fetchMembers() }, [sid])
+
+  // realtime subscribe (if not configured, polling still keeps it fresh)
   useEffect(() => {
     const channel = supabase
       .channel('members-realtime')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'members', filter: `sid=eq.${sid}` },
-        async () => {
-          const { data } = await supabase
-            .from('members')
-            .select('username,favorite')
-            .eq('sid', sid)
-            .order('joined_at', { ascending: true })
-          setMembers(data || [])
-        }
+        () => fetchMembers()
       )
       .subscribe()
     return () => { supabase.removeChannel(channel) }
   }, [sid])
 
+  // polling fallback every 2s
+  useEffect(() => {
+    const id = setInterval(fetchMembers, 2000)
+    return () => clearInterval(id)
+  }, [sid])
+
   return (
     <main style={{display:'grid',placeItems:'center',height:'100vh',background:'#000',color:'#fff',fontFamily:'system-ui'}}>
-      <div style={{ textAlign:'center' }}>
+      <div style={{ textAlign:'center', maxWidth:900 }}>
         <canvas ref={canvasRef} style={{width:'60vmin',height:'60vmin',background:'#fff',padding:'2vmin',borderRadius:'2vmin'}} />
         <div style={{ marginTop:12, opacity:.85 }}>Scan to join</div>
 
+        <div style={{marginTop:8, fontSize:'1.8vmin', opacity:.6}}>
+          SID: {sid}
+        </div>
+
         <h2 style={{ marginTop:24, fontSize:'2.4vmin' }}>Currently logged in users:</h2>
+        {err && <div style={{color:'#ff6b6b', fontSize:'2vmin'}}>Error: {err}</div>}
         <ul style={{ listStyle:'none', padding:0, margin:0, fontSize:'2.2vmin' }}>
           {members.length === 0 ? <li>None yet</li> :
             members.map(m => <li key={m.username}>{m.username}</li>)
